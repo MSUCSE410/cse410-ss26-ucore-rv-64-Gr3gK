@@ -5,6 +5,8 @@
 #include "vm.h"
 #include "queue.h"
 
+#include "timer.h"
+
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
 __attribute__((aligned(4096))) char trapframe[NPROC][TRAP_PAGE_SIZE];
@@ -32,6 +34,18 @@ void proc_init()
 		p->state = UNUSED;
 		p->kstack = (uint64)kstack[p - pool];
 		p->trapframe = (struct trapframe *)trapframe[p - pool];
+		/*
+		* LAB1: you may need to initialize your new fields of proc here
+		*/
+		//initialize all fields and syscall times
+		p->start_time = 0;
+		for (int i = 0; i < MAX_SYSCALL_NUM; i++)
+			p->syscall_times[i] = 0;
+		
+		//chp5
+		p->priority = 16;
+		p->stride = 0;
+		p->pass = 65536 / 16;
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = IDLE_PID;
@@ -97,6 +111,8 @@ found:
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+//chp5
 void scheduler()
 {
 	struct proc *p;
@@ -198,6 +214,34 @@ int exec(char *name)
 	p->max_page = 0;
 	loader(id, p);
 	return 0;
+}
+//chp5
+int spawn(char *name)
+{	
+    //get id
+    int id = get_id_by_name(name);
+	//check if legit
+    if (id < 0)
+        return -1;
+
+    //check for full process pool
+    struct proc *p = allocproc();
+    if (p == NULL)
+        return -1;
+
+    //set parent of process
+    p->parent = curr_proc();
+
+    //memory failure
+	//try to load process into memory
+    if (loader(id, p) < 0) {
+        return -1;
+    }
+
+	//new process so add it
+    add_task(p);
+
+    return p->pid;
 }
 
 int wait(int pid, int *code)

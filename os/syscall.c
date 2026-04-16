@@ -59,6 +59,133 @@ uint64 sys_gettimeofday(uint64 val, int _tz)
 	return 0;
 }
 
+uint64 sys_mmap(uint64 start, uint64 len, int port, int flags, int fd)
+{
+    //get current process
+    struct proc *p = curr_proc();
+    //return directly
+    if (len == 0)
+        return 0;
+
+    //check for size make sure its less than 1gb
+    uint64 one_GB = 1ULL << 30;
+    if (len > one_GB)
+        return -1;
+    //check permissions or ports
+    /*
+        bit 0 indicates whether it is readable, bit 1 indicates whether it is
+        writable, and bit 2 indicates whether it is executable. Other bits are invalid
+        (must be 0)
+    */
+    if ((port & ~0x7) != 0)
+        return -1;
+    if ((port & 0x7) == 0)
+        return -1;
+    //check for page alignment
+    if (start % PGSIZE != 0)
+        return -1;
+    
+    //get start and end of vritual adress page
+    uint64 va_start = start;
+    uint64 va_end   = PGROUNDUP(start + len);
+    //check if page has already been mapped
+    for (uint64 va = va_start; va < va_end; va += PGSIZE) {
+        if (useraddr(p->pagetable, va) != 0)
+            return -1;  
+    }
+    //check bit flag and assign permissions
+    int perm = PTE_U;
+    if (port == 1) {
+        perm = PTE_U | PTE_R;
+    } 
+    else if (port == 2) {
+        perm = PTE_U | PTE_W;
+    } 
+    else if (port == 3) {
+        perm = PTE_U | PTE_R | PTE_W;
+    } 
+    else if (port == 4) {
+        perm = PTE_U | PTE_X;
+    } 
+    else if (port == 5) {
+        perm = PTE_U | PTE_R | PTE_X;
+    } 
+    else if (port == 6) {
+        perm = PTE_U | PTE_W | PTE_X;
+    } 
+    else if (port == 7) {
+        perm = PTE_U | PTE_R | PTE_W | PTE_X;
+    }
+    //for loop at map va to pa
+    for (uint64 va = va_start; va < va_end; va += PGSIZE) {
+        //allocate memory
+        char *pa = kalloc();
+        //if no pa 
+        if (!pa) {
+            return -1;
+        }
+        //zero out page
+        memset(pa, 0, PGSIZE);
+        
+        //if mapping fails return error
+        if (mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+uint64 sys_munmap(uint64 start, uint64 len)
+{   
+    //get current process
+    struct proc *p = curr_proc();
+    //return error for len 0
+    if (len == 0)
+        return -1;
+    uint64 one_GB = 1ULL << 30;
+    if (len > one_GB)
+        return -1;
+    //check start and legnth compared to page size
+    if ((start % PGSIZE != 0) || (len % PGSIZE != 0))
+        return -1;
+    //get number of pages
+    uint64 npages = ((start + len) - start) / PGSIZE;
+    //unmap pages
+    if (npages > 0)
+        uvmunmap(p->pagetable, start, npages, 1);
+    return 0;
+}
+
+
+uint64 sys_task_info(struct TaskInfo *ti)
+{
+    //get curr process
+	struct proc *p = curr_proc();
+    //get user program address
+	uint64 pa = useraddr(p->pagetable, (uint64)ti);
+    
+    //doesnt exist throw error
+    if (pa == 0)
+        return -1;
+    //create pointer to process for kernel
+    struct TaskInfo *kptr = (struct TaskInfo *)pa;
+    //update status 
+    if (p->state == RUNNING)
+        kptr->status = Running;
+    else if (p->state == RUNNABLE)
+        kptr->status = Ready;
+    else if (p->state == UNUSED || p->state == ZOMBIE)
+        kptr->status = Exited;
+    else
+        kptr->status = UnInit;
+    //update syscall times
+    for (int i = 0; i < MAX_SYSCALL_NUM; i++)
+        kptr->syscall_times[i] = p->syscall_times[i];
+    //add time for task
+    kptr->time = (get_cycle() / (CPU_FREQ / 1000)) - p->start_time;
+    return 0;
+}
+
+
 uint64 sys_getpid()
 {
 	return curr_proc()->pid;
@@ -92,15 +219,44 @@ uint64 sys_wait(int pid, uint64 va)
 	return wait(pid, code);
 }
 
+//chp5 set up syscall function 400 for spawn
 uint64 sys_spawn(uint64 va)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+    //get current process
+	struct proc *p = curr_proc();
+
+    //check file name, same as sys_exec
+    char name[200];
+    if (copyinstr(p->pagetable, name, va, 200) < 0)
+        return -1;
+
+    //spawn process
+    int pid = spawn(name);
+    if (pid < 0)
+        return -1;
+
+    return pid;
 }
 
-uint64 sys_set_priority(long long prio){
-    // TODO: your job is to complete the sys call
-    return -1;
+//chp5, set priority for process
+uint64 sys_set_priority(long long prio)
+{
+    //get current process
+    struct proc *p = curr_proc();
+
+    //check if priority in range, cap it, no zeros or letting a procces run too much
+    if (prio > 32 || prio < 2)
+        return -1;
+
+    p->priority = prio;
+
+    //big stride is predefine large constant
+    int bigStride = 100000;
+
+    //set pass based on priority
+    p->pass =  bigStride / prio;
+
+    return prio;
 }
 
 
@@ -114,6 +270,15 @@ void syscall()
 			   trapframe->a3, trapframe->a4, trapframe->a5 };
 	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]", id, args[0],
 	       args[1], args[2], args[3], args[4], args[5]);
+
+	/*
+	* LAB1: you may need to update syscall counter for task info here
+	*/
+	struct proc *p = curr_proc();
+	if (p && id >= 0 && id < MAX_SYSCALL_NUM)
+		p->syscall_times[id]++;
+	
+		
 	switch (id) {
 	case SYS_write:
 		ret = sys_write(args[0], args[1], args[2]);
@@ -147,6 +312,26 @@ void syscall()
 		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
+		break;
+    
+    //chp5
+    case SYS_setpriority:
+        ret = sys_set_priority(args[0]);
+        break;
+
+
+	/*
+	* LAB1: you may need to add SYS_taskinfo case here
+	*/
+	case SYS_taskinfo:
+		ret = sys_task_info((struct TaskInfo *)args[0]);
+		break;
+
+	case SYS_mmap:
+		ret = sys_mmap(args[0], args[1], args[2], args[3], args[4]);
+		break;
+	case SYS_munmap:
+		ret = sys_munmap(args[0], args[1]);
 		break;
 	default:
 		ret = -1;

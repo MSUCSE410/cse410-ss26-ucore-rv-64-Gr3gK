@@ -8,6 +8,9 @@
 #define NPROC (512)
 #define FD_BUFFER_SIZE (16)
 
+//max syscalls
+#define MAX_SYSCALL_NUM 500
+
 struct file;
 
 // Saved registers for kernel context switches.
@@ -32,6 +35,30 @@ struct context {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+/*
+* LAB1: you may need to define struct for TaskInfo here
+*/
+//define TaskInfo
+
+typedef enum {
+	UnInit,
+	Ready,
+	Running,
+	Exited,
+} TaskStatus;
+
+
+struct TaskInfo {
+    TaskStatus status;                     
+    unsigned int syscall_times[MAX_SYSCALL_NUM]; 
+    int time;                              
+};
+
+
+//chp5
+int spawn(char *name);
+
+
 // Per-process state
 struct proc {
 	enum procstate state; // Process state
@@ -45,7 +72,21 @@ struct proc {
 	struct proc *parent; // Parent process
 	uint64 exit_code;
 	struct file *files[FD_BUFFER_SIZE];
+
+	/*
+	* LAB1: you may need to add some new fields here
+	*/
+	//fields for start time and when called
+	unsigned int syscall_times[MAX_SYSCALL_NUM]; 
+	uint64 start_time;
+
+	//chp5 
+	uint64 priority;
+    uint64 stride;
+    uint64 pass;
 };
+
+
 
 int cpuid();
 struct proc *curr_proc();
