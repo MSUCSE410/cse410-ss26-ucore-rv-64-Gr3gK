@@ -5,6 +5,8 @@
 #include "vm.h"
 #include "queue.h"
 
+#include "timer.h"
+
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
 __attribute__((aligned(4096))) char trapframe[NPROC][TRAP_PAGE_SIZE];
@@ -32,6 +34,12 @@ void proc_init()
 		p->state = UNUSED;
 		p->kstack = (uint64)kstack[p - pool];
 		p->trapframe = (struct trapframe *)trapframe[p - pool];
+
+		//chp5, initialize all fields and syscall times
+		p->start_time = 0;
+		for (int i = 0; i < MAX_SYSCALL_NUM; i++)
+			p->syscall_times[i] = 0;
+
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = IDLE_PID;
@@ -83,6 +91,12 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+
+	//chp5 initialize fields, big stride can be any large number
+	p->stride = 0;
+	p->priority = 16;
+	p->pass = (1 << 20) / p->priority;
+
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
@@ -114,14 +128,52 @@ void scheduler()
 		if(has_proc == 0) {
 			panic("all app are over!\n");
 		}*/
+
+		/* chp5 replaces this because its FIFO scheduler
 		p = fetch_task();
 		if (p == NULL) {
 			panic("all app are over!\n");
 		}
+		*/
+		struct proc *min_stride = NULL;
+		//loop throught pool
+		for (p = pool; p < &pool[NPROC]; p++) {
+			if (p->state == RUNNABLE) {
+				if (min_stride == NULL) {
+					min_stride = p;
+				}
+				//select process with smallest stride
+				else if (p->stride < min_stride->stride ){
+					min_stride = p;
+				}
+			}
+		}
+
+		//check runnable process
+		if (min_stride == NULL) {
+			panic("all app are over!\n");
+		}
+
+		p = min_stride;
+
+		//original
 		tracef("swtich to proc %d", p - pool);
+
+		/* replace
 		p->state = RUNNING;
 		current_proc = p;
 		swtch(&idle.context, &p->context);
+		*/
+
+		//set process as running and set current_proc
+		p->state = RUNNING;
+		current_proc = p;
+		
+		//update stride
+		p->stride += p->pass;
+
+		swtch(&idle.context, &p->context);
+
 	}
 }
 
@@ -144,7 +196,7 @@ void sched()
 void yield()
 {
 	current_proc->state = RUNNABLE;
-	add_task(current_proc);
+	//ch5 dont need add_task(current_proc);
 	sched();
 }
 
@@ -184,7 +236,7 @@ int fork()
 	np->trapframe->a0 = 0;
 	np->parent = p;
 	np->state = RUNNABLE;
-	add_task(np);
+	// chp 5 remove add_task(np);
 	return np->pid;
 }
 
@@ -226,7 +278,7 @@ int wait(int pid, int *code)
 			return -1;
 		}
 		p->state = RUNNABLE;
-		add_task(p);
+		//ch5 dont need add_task(p);
 		sched();
 	}
 }
